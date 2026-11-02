@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#153d70">
+  <title>Scan Barang Keluar – Gudang MTM</title>
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+  <style>
+    :root { --navy:#153d70; --blue:#2674c8; --bg:#f3f6fa; --text:#172334; --muted:#687789; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:16px; background:var(--bg); color:var(--text); font-family:Arial,sans-serif; }
+    .wrap { max-width:480px; margin:0 auto; }
+    .head { background:linear-gradient(135deg,#153d70,#2875bd); color:#fff; padding:20px; border-radius:18px; }
+    .head h1 { font-size:21px; margin:0 0 5px; }
+    .head p { margin:0; color:#dceaff; font-size:13px; }
+    .card { background:#fff; border-radius:16px; padding:17px; margin-top:14px; }
+    label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; }
+    select,input { width:100%; border:1px solid #d6deea; border-radius:11px; padding:14px; font-size:16px; }
+    button { width:100%; border:0; border-radius:11px; padding:14px; margin-top:12px; color:#fff; background:var(--navy); font-size:15px; font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .scanner { text-align:center; }
+    .ready { color:#16834a; font-weight:700; font-size:14px; }
+    .hint { color:var(--muted); font-size:12px; line-height:1.5; }
+    .hidden { display:none !important; }
+    .result { border-radius:12px; padding:13px; margin-top:10px; font-size:14px; line-height:1.5; overflow-wrap:anywhere; text-align:left; }
+    .success { background:#e9f7ef; border:1px solid #b8e5c9; color:#12643a; }
+    .error { background:#fff0f0; border:1px solid #f2c3c3; color:#a32626; }
+    .smallbtn { background:#e9eef5; color:#25415f; }
+    .counter { display:flex; justify-content:space-between; color:var(--muted); font-size:13px; }
+    #barcodeInput { font-size:18px; text-align:center; }
+    .foot { text-align:center; color:#8491a0; font-size:11px; padding:18px 5px; }
+    .modeButtons { display:flex; gap:8px; margin-top:12px; }
+    .modeButtons button { margin-top:0; }
+    video { width:100%; max-height:320px; background:#111; border-radius:12px; margin-top:12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>SCAN BARANG KELUAR – MTM</h1>
+    <p>Sistem Scan Barang Keluar Gudang</p>
+  </div>
+
+  <section class="card" id="loginCard">
+    <label for="petugas">Pilih nama petugas</label>
+    <select id="petugas"><option value="">Memuat daftar petugas...</option></select>
+    <button id="startBtn" onclick="mulaiScan()" disabled>MULAI SCAN</button>
+    <div class="hint" style="margin-top:10px">Pilih nama sesuai petugas yang sedang bertugas. Pastikan koneksi internet aktif.</div>
+  </section>
+
+  <section class="card scanner hidden" id="scanCard">
+    <div class="ready" id="petugasAktif">Petugas: -</div>
+    <div style="font-size:36px;margin:8px 0">▦</div>
+    <div style="font-weight:700;font-size:17px">PILIH CARA SCAN</div>
+
+    <div class="modeButtons">
+      <button type="button" onclick="pilihMode('bluetooth')">SCANNER BLUETOOTH</button>
+      <button type="button" onclick="mulaiKamera()" class="smallbtn">KAMERA HP</button>
+    </div>
+
+    <div id="bluetoothPanel">
+      <p class="hint">Hubungkan scanner Bluetooth ke HP dalam mode HID Keyboard. Arahkan scanner ke barcode Code 128 dan aktifkan akhiran Enter setelah scan.</p>
+      <form id="scanForm" onsubmit="terimaScan(event)">
+        <input id="barcodeInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Kolom barcode siap menerima scan">
+        <button type="submit">PROSES BARCODE</button>
+      </form>
+      <div class="hint" style="margin-top:8px">Bisa menerima input scanner Bluetooth maupun input manual.</div>
+    </div>
+
+    <div id="cameraPanel" class="hidden">
+      <video id="cameraVideo" playsinline muted></video>
+      <div class="hint" id="cameraStatus" style="margin-top:8px">Tekan tombol KAMERA HP untuk meminta akses kamera.</div>
+      <button type="button" id="stopCameraBtn" class="smallbtn hidden" onclick="stopKameraManual()">MATIKAN KAMERA</button>
+    </div>
+
+    <div id="results" aria-live="polite"></div>
+    <div class="counter" style="margin-top:14px"><span>Berhasil di sesi ini</span><strong id="count">0</strong></div>
+    <button class="smallbtn" onclick="akhiriSesi()">GANTI PETUGAS / KELUAR</button>
+  </section>
+  <div class="foot">Data transaksi tersimpan di Google Sheets perusahaan.</div>
+</div>
+
+<script>
+/*
+ * API Apps Script yang sudah diberikan.
+ * GitHub Pages tidak dapat memakai google.script.run, sehingga komunikasi
+ * dilakukan melalui JSONP ke Web App Apps Script.
+ */
+const API_URL = 'https://script.google.com/macros/s/AKfycbyVi3n80yPag9BEwZ87yB1HMAJW9d9SkRNwp84n-FKLJbenuW_Pn2ahlgp3gHTm8YTP/exec';
+
+let petugasAktif = '';
+let successCount = 0;
+let cameraActive = false;
+let cameraReader = null;
+let cameraControls = null;
+let activeMode = 'bluetooth';
+let requestBusy = false;
+
+function apiRequest(params) {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'mtmJsonp_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    const script = document.createElement('script');
+    let finished = false;
+    const timeout = setTimeout(() => finish(new Error('Koneksi ke server habis waktu. Periksa internet atau URL Apps Script.')), 20000);
+
+    function finish(err, data) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+      if (script.parentNode) script.parentNode.removeChild(script);
+      if (err) reject(err); else resolve(data);
+    }
+
+    window[callbackName] = data => finish(null, data);
+    const query = new URLSearchParams({...params, callback: callbackName, _: Date.now()});
+    script.src = API_URL + '?' + query.toString();
+    script.onerror = () => finish(new Error('Tidak dapat menghubungi API Apps Script. Periksa URL dan deployment Web App.'));
+    document.head.appendChild(script);
+  });
+}
+
+async function loadPetugas() {
+  const sel = document.getElementById('petugas');
+  const start = document.getElementById('startBtn');
+  sel.innerHTML = '<option value="">Memuat daftar petugas...</option>';
+  start.disabled = true;
+  try {
+    const res = await apiRequest({action:'staff'});
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Gagal mengambil daftar petugas.');
+    const list = Array.isArray(res.data) ? res.data : [];
+    sel.innerHTML = '<option value="">-- Pilih nama petugas --</option>';
+    list.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    start.disabled = list.length === 0;
+    if (!list.length) sel.innerHTML = '<option value="">Belum ada petugas aktif</option>';
+  } catch (err) {
+    sel.innerHTML = '<option value="">Gagal memuat daftar petugas</option>';
+    showMessage('error', esc(err.message || String(err)));
+  }
+}
+
+function mulaiScan() {
+  const name = document.getElementById('petugas').value;
+  if (!name) { alert('Pilih nama petugas terlebih dahulu.'); return; }
+  petugasAktif = name;
+  document.getElementById('petugasAktif').textContent = 'Petugas aktif: ' + name;
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('scanCard').classList.remove('hidden');
+  focusInput();
+}
+
+function pilihMode(mode) {
+  if (mode !== 'camera') hentikanKamera();
+  activeMode = mode;
+  document.getElementById('bluetoothPanel').classList.toggle('hidden', mode !== 'bluetooth');
+  document.getElementById('cameraPanel').classList.toggle('hidden', mode !== 'camera');
+  if (mode === 'bluetooth') focusInput();
+}
+
+function focusInput() {
+  const el = document.getElementById('barcodeInput');
+  if (el && !document.hidden && !document.getElementById('bluetoothPanel').classList.contains('hidden')) el.focus();
+}
+
+async function mulaiKamera() {
+  pilihMode('camera');
+  const status = document.getElementById('cameraStatus');
+  const video = document.getElementById('cameraVideo');
+
+  if (!window.isSecureContext) {
+    status.textContent = 'Kamera membutuhkan koneksi HTTPS. Buka halaman GitHub Pages yang diawali https://';
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    status.textContent = 'Browser tidak mendukung akses kamera. Gunakan Chrome Android dan pastikan izin kamera untuk situs ini diaktifkan.';
+    return;
+  }
+  if (!window.ZXing || !ZXing.BrowserMultiFormatReader) {
+    status.textContent = 'Library pembaca barcode belum termuat. Periksa koneksi internet atau gunakan scanner Bluetooth.';
+    return;
+  }
+
+  hentikanKamera();
+  activeMode = 'camera';
+  status.textContent = 'Meminta izin kamera...';
+  document.getElementById('stopCameraBtn').classList.remove('hidden');
+
+  try {
+    // Minta kamera belakang secara eksplisit agar browser menampilkan prompt izin.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio:false,
+      video:{facingMode:{ideal:'environment'}}
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128]);
+    cameraReader = new ZXing.BrowserMultiFormatReader(hints, 250);
+    cameraActive = true;
+    status.textContent = 'Kamera aktif. Arahkan barcode Code 128 ke kamera belakang.';
+
+    cameraControls = await cameraReader.decodeFromVideoElement(video, (result, error) => {
+      if (!cameraActive || !result || requestBusy) return;
+      const code = String(result.getText() || '').trim();
+      if (!code) return;
+      hentikanKamera();
+      status.textContent = 'Barcode terbaca. Sedang diproses...';
+      kirimBarcode(code).finally(() => {
+        if (activeMode === 'camera' && petugasAktif) mulaiKamera();
+      });
+    });
+  } catch (err) {
+    hentikanKamera();
+    const msg = err && err.name === 'NotAllowedError'
+      ? 'Izin kamera ditolak. Buka pengaturan situs di Chrome, ubah Kamera menjadi Izinkan, lalu muat ulang halaman.'
+      : (err.message || String(err));
+    status.textContent = 'Kamera gagal dibuka: ' + msg;
+  }
+}
+
+function hentikanKamera() {
+  cameraActive = false;
+  if (cameraControls) {
+    try { cameraControls.stop(); } catch (_) {}
+    cameraControls = null;
+  }
+  if (cameraReader) {
+    try { cameraReader.reset(); } catch (_) {}
+    cameraReader = null;
+  }
+  const video = document.getElementById('cameraVideo');
+  if (video) {
+    if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
+    video.pause();
+    video.srcObject = null;
+  }
+  const stopBtn = document.getElementById('stopCameraBtn');
+  if (stopBtn) stopBtn.classList.add('hidden');
+}
+
+function stopKameraManual() {
+  hentikanKamera();
+  pilihMode('bluetooth');
+}
+
+function terimaScan(ev) {
+  ev.preventDefault();
+  const el = document.getElementById('barcodeInput');
+  const code = el.value.trim();
+  el.value = '';
+  if (code) kirimBarcode(code);
+  focusInput();
+}
+
+async function kirimBarcode(code) {
+  code = String(code || '').trim();
+  if (!code || requestBusy) return;
+  requestBusy = true;
+  try {
+    const res = await apiRequest({action:'scan', code:code, petugas:petugasAktif});
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Scan ditolak oleh server.');
+    successCount++;
+    document.getElementById('count').textContent = successCount;
+    showMessage('success',
+      '<b>BERHASIL KELUAR</b><br>' +
+      esc(res.nama) + '<br>Barcode: ' + esc(res.id) +
+      '<br>Lot: ' + esc(res.lot) + ' · Pcs: ' + esc(res.pcs) +
+      '<br>Petugas: ' + esc(res.petugas) +
+      '<br>Waktu: ' + esc(res.waktu));
+  } catch (err) {
+    showMessage('error', '<b>SCAN DITOLAK / GAGAL</b><br>' + esc(err.message || String(err)) + '<br>Barcode: ' + esc(code));
+  } finally {
+    requestBusy = false;
+    focusInput();
+  }
+}
+
+function showMessage(type, html) {
+  const box = document.createElement('div');
+  box.className = 'result ' + type;
+  box.innerHTML = html;
+  const results = document.getElementById('results');
+  results.insertBefore(box, results.firstChild);
+  while (results.children.length > 5) results.removeChild(results.lastChild);
+}
+
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+}
+
+function akhiriSesi() {
+  if (!confirm('Akhiri sesi petugas ' + petugasAktif + '?')) return;
+  hentikanKamera();
+  activeMode = 'bluetooth';
+  petugasAktif = '';
+  successCount = 0;
+  requestBusy = false;
+  document.getElementById('count').textContent = '0';
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('scanCard').classList.add('hidden');
+  document.getElementById('loginCard').classList.remove('hidden');
+  document.getElementById('petugas').value = '';
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) focusInput(); });
+window.addEventListener('pagehide', hentikanKamera);
+window.addEventListener('load', loadPetugas);
+</script>
+</body>
+</html>
