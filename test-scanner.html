@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123b73">
+  <title>Uji Scanner Barcode MTM</title>
+  <style>
+    :root { color-scheme: light; --blue:#123b73; --blue2:#1d5ca5; --bg:#f3f6fb; --ink:#17243a; --muted:#64748b; --line:#dbe3ef; }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    main { width:min(760px,100%); margin:0 auto; padding:20px 14px 40px; }
+    header { background:linear-gradient(135deg,#102f5d,#2466ad); color:white; padding:22px; border-radius:18px; box-shadow:0 8px 24px #173d7022; }
+    h1 { margin:0 0 5px; font-size:22px; } header p { margin:0; opacity:.9; }
+    .panel { background:white; border:1px solid var(--line); border-radius:16px; padding:16px; margin-top:14px; box-shadow:0 3px 12px #16365c0b; }
+    .label { display:block; font-weight:700; margin-bottom:7px; }
+    select,button,input { font:inherit; }
+    select { width:100%; padding:11px; border:1px solid var(--line); border-radius:10px; background:white; color:var(--ink); }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    button { border:0; border-radius:10px; padding:11px 14px; font-weight:700; cursor:pointer; background:var(--blue); color:white; }
+    button.secondary { background:#e8eef7; color:var(--blue); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .camera { margin-top:14px; overflow:hidden; background:#0b1422; border-radius:14px; min-height:220px; display:grid; place-items:center; }
+    #reader { width:100%; }
+    #reader video { width:100% !important; height:auto !important; display:block; }
+    #reader__dashboard_section_csr button { margin:4px; }
+    .status { color:var(--muted); font-size:14px; margin:10px 0 0; }
+    .result { font:700 19px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; overflow-wrap:anywhere; padding:13px; background:#f1f5fb; border:1px solid var(--line); border-radius:10px; min-height:52px; }
+    .tag { display:inline-block; padding:3px 8px; border-radius:99px; background:#e8eef7; color:var(--blue); font-size:12px; font-weight:800; }
+    .ok { color:#147a45; } .warn { color:#9a5a00; }
+    .small { color:var(--muted); font-size:13px; }
+    .hidden { display:none !important; }
+    footer { text-align:center; color:var(--muted); font-size:12px; margin-top:18px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Uji Scanner Barcode — Gudang MTM</h1>
+    <p>Halaman tes kamera terpisah. Tidak terhubung ke Spreadsheet, Apps Script, atau transaksi stok.</p>
+  </header>
+
+  <section class="panel">
+    <label class="label" for="cameraSelect">Kamera</label>
+    <select id="cameraSelect"><option value="">Memuat daftar kamera…</option></select>
+    <div class="actions">
+      <button id="startZxing">Uji @zxing/browser</button>
+      <button id="startHtml5" class="secondary">Uji html5-qrcode</button>
+      <button id="stop" class="secondary" disabled>Hentikan kamera</button>
+    </div>
+    <p id="status" class="status">Memeriksa dukungan kamera…</p>
+    <div class="camera">
+      <div id="reader"></div>
+      <video id="zxingVideo" class="hidden" playsinline muted></video>
+    </div>
+    <p class="small">Arahkan barcode Code 128 ke kamera, pastikan seluruh garis barcode terlihat, dan beri jarak agar fokus.</p>
+  </section>
+
+  <section class="panel">
+    <span class="tag" id="engineTag">Belum mulai</span>
+    <h2 style="font-size:17px;margin:12px 0 8px">Hasil pembacaan</h2>
+    <div id="result" class="result" aria-live="polite">Belum ada barcode terbaca.</div>
+    <p id="detail" class="status">Barcode acuan: PRD1-1-021126-0001</p>
+    <div class="actions">
+      <button id="copy" class="secondary" disabled>Salin hasil</button>
+      <button id="clear" class="secondary">Bersihkan hasil</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <strong>Catatan pengujian</strong>
+    <ul class="small">
+      <li>Gunakan alamat HTTPS (GitHub Pages sudah mendukung HTTPS).</li>
+      <li>Izinkan akses kamera saat diminta browser.</li>
+      <li>Bandingkan apakah kedua decoder membaca teks barcode yang sama persis.</li>
+      <li>Jika kamera tidak muncul, tutup aplikasi lain yang sedang memakai kamera lalu muat ulang halaman.</li>
+    </ul>
+  </section>
+  <footer>MTM · Halaman pengujian mandiri · Tidak mengirim data ke sistem produksi</footer>
+</main>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script type="module">
+  import { BrowserMultiFormatReader } from "https://esm.sh/@zxing/browser@0.1.5";
+
+  const $ = (id) => document.getElementById(id);
+  const cameraSelect = $("cameraSelect");
+  const statusEl = $("status");
+  const resultEl = $("result");
+  const detailEl = $("detail");
+  const engineTag = $("engineTag");
+  const zxingVideo = $("zxingVideo");
+  let zxingControls = null;
+  let html5Scanner = null;
+  let activeEngine = null;
+  let lastValue = "";
+  let cameras = [];
+
+  function setStatus(message, kind="") {
+    statusEl.textContent = message;
+    statusEl.className = "status " + kind;
+  }
+  function showResult(value, engine, format) {
+    if (!value) return;
+    lastValue = value;
+    resultEl.textContent = value;
+    engineTag.textContent = engine;
+    detailEl.textContent = "Format: " + (format || "tidak dilaporkan") +
+      " · " + (value === "PRD1-1-021126-0001" ? "Sesuai barcode acuan" : "Hasil berbeda dari barcode acuan");
+    detailEl.className = "status " + (value === "PRD1-1-021126-0001" ? "ok" : "warn");
+    $("copy").disabled = false;
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+  async function stopScanner() {
+    try { if (zxingControls) { zxingControls.stop(); zxingControls = null; } } catch (_) {}
+    try { if (html5Scanner) { await html5Scanner.stop(); await html5Scanner.clear(); html5Scanner = null; } } catch (_) {}
+    try { zxingVideo.pause(); zxingVideo.srcObject?.getTracks().forEach(t => t.stop()); zxingVideo.srcObject = null; } catch (_) {}
+    $("reader").innerHTML = "";
+    zxingVideo.classList.add("hidden");
+    $("stop").disabled = true;
+    activeEngine = null;
+  }
+  async function loadCameras() {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Browser tidak mendukung akses kamera.");
+      // Minta izin sekali agar label kamera dapat ditampilkan, lalu langsung lepaskan stream.
+      const stream = await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+      stream.getTracks().forEach(t => t.stop());
+      cameras = await Html5Qrcode.getCameras();
+      cameraSelect.innerHTML = "";
+      cameras.forEach((cam, i) => {
+        const option = document.createElement("option");
+        option.value = cam.id;
+        option.textContent = cam.label || `Kamera ${i+1}`;
+        cameraSelect.appendChild(option);
+      });
+      const back = cameras.find(c => /back|rear|environment|belakang/i.test(c.label || ""));
+      if (back) cameraSelect.value = back.id;
+      setStatus(cameras.length ? `${cameras.length} kamera ditemukan. Pilih decoder untuk mulai.` : "Tidak ada kamera terdeteksi.", cameras.length ? "ok" : "warn");
+    } catch (err) {
+      cameraSelect.innerHTML = '<option value="">Kamera tidak tersedia</option>';
+      setStatus("Tidak dapat mengakses kamera: " + (err?.message || err) + " Pastikan izin kamera aktif dan halaman dibuka melalui HTTPS.", "warn");
+    }
+  }
+
+  $("startZxing").addEventListener("click", async () => {
+    await stopScanner();
+    const cameraId = cameraSelect.value || undefined;
+    try {
+      activeEngine = "ZXing";
+      engineTag.textContent = "ZXing · memulai…";
+      zxingVideo.classList.remove("hidden");
+      const reader = new BrowserMultiFormatReader();
+      zxingControls = await reader.decodeFromVideoDevice(cameraId, zxingVideo, (result, err) => {
+        if (result) {
+          const text = result.getText();
+          const format = result.getBarcodeFormat?.() ?? "Code 128 / format terdeteksi";
+          showResult(text, " @zxing/browser", String(format));
+          setStatus("Barcode berhasil dibaca oleh ZXing.", "ok");
+        }
+      });
+      $("stop").disabled = false;
+      setStatus("Kamera aktif. Arahkan barcode ke dalam gambar.", "ok");
+    } catch (err) {
+      await stopScanner();
+      setStatus("ZXing gagal memulai kamera: " + (err?.message || err), "warn");
+    }
+  });
+
+  $("startHtml5").addEventListener("click", async () => {
+    await stopScanner();
+    const cameraId = cameraSelect.value;
+    if (!cameraId) { setStatus("Pilih kamera terlebih dahulu.", "warn"); return; }
+    try {
+      activeEngine = "html5-qrcode";
+      engineTag.textContent = "html5-qrcode · memulai…";
+      html5Scanner = new Html5Qrcode("reader", {
+        verbose:false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128]
+      });
+      await html5Scanner.start(
+        cameraId,
+        {
+          fps: 12,
+          aspectRatio: 1.777,
+          disableFlip: false
+        },
+        (decodedText, decodedResult) => {
+          const format = decodedResult?.result?.format?.formatName || "CODE_128";
+          showResult(decodedText, " html5-qrcode", format);
+          setStatus("Barcode berhasil dibaca oleh html5-qrcode.", "ok");
+        },
+        () => {}
+      );
+      $("stop").disabled = false;
+      setStatus("Kamera aktif. Arahkan barcode ke dalam area kamera.", "ok");
+    } catch (err) {
+      await stopScanner();
+      setStatus("html5-qrcode gagal memulai kamera: " + (err?.message || err), "warn");
+    }
+  });
+
+  $("stop").addEventListener("click", async () => {
+    await stopScanner();
+    setStatus("Kamera dihentikan.");
+  });
+  $("copy").addEventListener("click", async () => {
+    if (!lastValue) return;
+    try { await navigator.clipboard.writeText(lastValue); setStatus("Hasil barcode disalin.", "ok"); }
+    catch (_) { setStatus("Tidak dapat menyalin otomatis. Pilih teks hasil lalu salin.", "warn"); }
+  });
+  $("clear").addEventListener("click", () => {
+    lastValue = "";
+    resultEl.textContent = "Belum ada barcode terbaca.";
+    detailEl.textContent = "Barcode acuan: PRD1-1-021126-0001";
+    detailEl.className = "status";
+    $("copy").disabled = true;
+  });
+  window.addEventListener("pagehide", () => { try { zxingControls?.stop(); } catch (_) {} });
+  loadCameras();
+</script>
+</body>
+</html>
