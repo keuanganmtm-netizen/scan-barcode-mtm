@@ -207,9 +207,26 @@ async function mulaiKamera() {
   try {
     // Biarkan ZXing meminta stream sekaligus mengelola preview dan proses decode.
     // Ini menghindari pembukaan stream manual yang kemudian diserahkan lagi ke reader.
+    // Multi-format: membaca barcode 1D dan 2D yang umum dipakai.
+    // TRY_HARDER membantu decoder mencoba lebih teliti pada barcode yang sulit dibaca.
     const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128]);
-    cameraReader = new ZXing.BrowserMultiFormatReader(hints, 180);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.CODE_128,
+      ZXing.BarcodeFormat.CODE_39,
+      ZXing.BarcodeFormat.CODE_93,
+      ZXing.BarcodeFormat.CODABAR,
+      ZXing.BarcodeFormat.ITF,
+      ZXing.BarcodeFormat.EAN_13,
+      ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A,
+      ZXing.BarcodeFormat.UPC_E,
+      ZXing.BarcodeFormat.QR_CODE,
+      ZXing.BarcodeFormat.DATA_MATRIX,
+      ZXing.BarcodeFormat.AZTEC,
+      ZXing.BarcodeFormat.PDF_417
+    ]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    cameraReader = new ZXing.BrowserMultiFormatReader(hints, 250);
 
     cameraActive = true;
     cameraControls = await cameraReader.decodeFromConstraints({
@@ -236,7 +253,7 @@ async function mulaiKamera() {
     });
 
     if (cameraActive) {
-      status.textContent = 'Kamera aktif. Posisikan barcode di dalam kotak pemindai dan tahan beberapa saat.';
+      status.textContent = 'KAMERA AKTIF · Siap membaca Code 128, Code 39, EAN, UPC, QR, Data Matrix, dan format lain yang didukung.';
     }
   } catch (err) {
     hentikanKamera();
