@@ -38,6 +38,7 @@
     .scan-laser { position:absolute; left:0; right:0; top:0; height:3px; background:#37f5b5; box-shadow:0 0 8px 3px rgba(55,245,181,.75); animation:scanSweep 2s ease-in-out infinite alternate; }
     @keyframes scanSweep { from { top:0; } to { top:calc(100% - 3px); } }
     .scan-caption { color:#d7fff2; background:#071a19; padding:8px 10px; font-size:12px; text-align:center; }
+    .flash-on { background:#e6a817 !important; color:#172334 !important; }
   </style>
 </head>
 <body>
@@ -80,6 +81,7 @@
         <div class="scan-caption">ARAHKAN BARCODE KE DALAM KOTAK PEMINDAI</div>
       </div>
       <div class="hint" id="cameraStatus" style="margin-top:8px">Tekan tombol KAMERA HP untuk meminta akses kamera.</div>
+      <button type="button" id="flashBtn" class="smallbtn hidden" onclick="toggleFlash()">NYALAKAN FLASH</button>
       <button type="button" id="stopCameraBtn" class="smallbtn hidden" onclick="stopKameraManual()">MATIKAN KAMERA</button>
     </div>
 
@@ -103,6 +105,8 @@ let successCount = 0;
 let cameraActive = false;
 let cameraReader = null;
 let cameraControls = null;
+let flashTrack = null;
+let flashOn = false;
 let activeMode = 'bluetooth';
 let requestBusy = false;
 let scanQueue = [];
@@ -253,7 +257,19 @@ async function mulaiKamera() {
     });
 
     if (cameraActive) {
-      status.textContent = 'KAMERA AKTIF · Siap membaca Code 128, Code 39, EAN, UPC, QR, Data Matrix, dan format lain yang didukung.';
+      const tracks = video.srcObject ? video.srcObject.getVideoTracks() : [];
+      flashTrack = tracks.length ? tracks[0] : null;
+      let torchSupported = false;
+      try {
+        const capabilities = flashTrack && flashTrack.getCapabilities ? flashTrack.getCapabilities() : {};
+        torchSupported = !!(capabilities && capabilities.torch);
+      } catch (_) {}
+      const flashBtn = document.getElementById('flashBtn');
+      flashBtn.classList.toggle('hidden', !torchSupported);
+      flashOn = false;
+      flashBtn.textContent = 'NYALAKAN FLASH';
+      flashBtn.classList.remove('flash-on');
+      status.textContent = 'KAMERA AKTIF · Siap membaca berbagai format barcode.' + (torchSupported ? ' Flash tersedia.' : ' Flash tidak didukung oleh kamera/browser ini.');
     }
   } catch (err) {
     hentikanKamera();
@@ -267,8 +283,30 @@ async function mulaiKamera() {
     status.textContent = 'Kamera gagal dibuka: ' + msg;
   }
 }
+async function toggleFlash() {
+  const btn = document.getElementById('flashBtn');
+  if (!flashTrack || !flashTrack.applyConstraints) return;
+  try {
+    const nextState = !flashOn;
+    await flashTrack.applyConstraints({advanced: [{torch: nextState}]});
+    flashOn = nextState;
+    btn.textContent = flashOn ? 'MATIKAN FLASH' : 'NYALAKAN FLASH';
+    btn.classList.toggle('flash-on', flashOn);
+  } catch (err) {
+    document.getElementById('cameraStatus').textContent = 'Flash gagal diubah. Perangkat atau browser mungkin tidak mendukung kontrol flash.';
+  }
+}
+
 function hentikanKamera() {
   cameraActive = false;
+  flashTrack = null;
+  flashOn = false;
+  const flashBtn = document.getElementById('flashBtn');
+  if (flashBtn) {
+    flashBtn.classList.add('hidden');
+    flashBtn.textContent = 'NYALAKAN FLASH';
+    flashBtn.classList.remove('flash-on');
+  }
   if (cameraControls) {
     try { cameraControls.stop(); } catch (_) {}
     cameraControls = null;
