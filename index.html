@@ -32,7 +32,12 @@
     .foot { text-align:center; color:#8491a0; font-size:11px; padding:18px 5px; }
     .modeButtons { display:flex; gap:8px; margin-top:12px; }
     .modeButtons button { margin-top:0; }
-    video { width:100%; max-height:320px; background:#111; border-radius:12px; margin-top:12px; }
+    .camera-stage { position:relative; width:100%; margin-top:12px; overflow:hidden; border-radius:12px; background:#050b12; }
+    video { display:block; width:100%; max-height:360px; min-height:220px; object-fit:cover; background:#050b12; }
+    .scan-overlay { position:absolute; inset:12% 7%; border:2px solid rgba(34,211,170,.85); border-radius:14px; pointer-events:none; box-shadow:0 0 0 999px rgba(0,0,0,.12); }
+    .scan-laser { position:absolute; left:0; right:0; top:0; height:3px; background:#37f5b5; box-shadow:0 0 8px 3px rgba(55,245,181,.75); animation:scanSweep 2s ease-in-out infinite alternate; }
+    @keyframes scanSweep { from { top:0; } to { top:calc(100% - 3px); } }
+    .scan-caption { color:#d7fff2; background:#071a19; padding:8px 10px; font-size:12px; text-align:center; }
   </style>
 </head>
 <body>
@@ -69,7 +74,11 @@
     </div>
 
     <div id="cameraPanel" class="hidden">
-      <video id="cameraVideo" playsinline muted></video>
+      <div class="camera-stage">
+        <video id="cameraVideo" playsinline autoplay muted></video>
+        <div class="scan-overlay"><div class="scan-laser"></div></div>
+        <div class="scan-caption">ARAHKAN BARCODE KE DALAM KOTAK PEMINDAI</div>
+      </div>
       <div class="hint" id="cameraStatus" style="margin-top:8px">Tekan tombol KAMERA HP untuk meminta akses kamera.</div>
       <button type="button" id="stopCameraBtn" class="smallbtn hidden" onclick="stopKameraManual()">MATIKAN KAMERA</button>
     </div>
@@ -178,7 +187,7 @@ async function mulaiKamera() {
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    status.textContent = 'Browser tidak mendukung akses kamera. Gunakan Chrome Android dan pastikan izin kamera untuk situs ini diaktifkan.';
+    status.textContent = 'Browser tidak mendukung akses kamera. Gunakan Chrome Android dan izinkan kamera untuk situs ini.';
     return;
   }
   if (!window.ZXing || !ZXing.BrowserMultiFormatReader) {
@@ -188,43 +197,52 @@ async function mulaiKamera() {
 
   hentikanKamera();
   activeMode = 'camera';
-  status.textContent = 'Meminta izin kamera...';
+  status.textContent = 'Mengaktifkan kamera belakang...';
   document.getElementById('stopCameraBtn').classList.remove('hidden');
 
   try {
-    // Minta kamera belakang secara eksplisit agar browser menampilkan prompt izin.
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio:false,
-      video:{facingMode:{ideal:'environment'}}
-    });
-    video.srcObject = stream;
-    await video.play();
-
+    // Biarkan ZXing meminta stream sekaligus mengelola preview dan proses decode.
+    // Ini menghindari pembukaan stream manual yang kemudian diserahkan lagi ke reader.
     const hints = new Map();
     hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128]);
-    cameraReader = new ZXing.BrowserMultiFormatReader(hints, 250);
-    cameraActive = true;
-    status.textContent = 'Kamera aktif. Arahkan barcode Code 128 ke kamera belakang.';
+    cameraReader = new ZXing.BrowserMultiFormatReader(hints, 180);
 
-    cameraControls = await cameraReader.decodeFromVideoElement(video, (result, error) => {
+    cameraActive = true;
+    cameraControls = await cameraReader.decodeFromConstraints({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 }
+      }
+    }, video, (result, error) => {
       if (!cameraActive || !result || requestBusy) return;
       const code = String(result.getText() || '').trim();
       if (!code) return;
+
       hentikanKamera();
-      status.textContent = 'Barcode terbaca. Sedang diproses...';
+      status.textContent = 'Barcode terbaca. Sedang dikirim ke sistem...';
       kirimBarcode(code).finally(() => {
         if (activeMode === 'camera' && petugasAktif) mulaiKamera();
       });
     });
+
+    if (cameraActive) {
+      status.textContent = 'Kamera aktif. Posisikan barcode di dalam kotak pemindai dan tahan beberapa saat.';
+    }
   } catch (err) {
     hentikanKamera();
     const msg = err && err.name === 'NotAllowedError'
       ? 'Izin kamera ditolak. Buka pengaturan situs di Chrome, ubah Kamera menjadi Izinkan, lalu muat ulang halaman.'
-      : (err.message || String(err));
+      : err && err.name === 'NotFoundError'
+        ? 'Kamera tidak ditemukan pada perangkat ini.'
+        : err && err.name === 'NotReadableError'
+          ? 'Kamera sedang digunakan aplikasi lain. Tutup aplikasi kamera lain lalu coba lagi.'
+          : (err.message || String(err));
     status.textContent = 'Kamera gagal dibuka: ' + msg;
   }
 }
-
 function hentikanKamera() {
   cameraActive = false;
   if (cameraControls) {
