@@ -105,6 +105,10 @@ let cameraReader = null;
 let cameraControls = null;
 let activeMode = 'bluetooth';
 let requestBusy = false;
+let scanQueue = [];
+let processingScanQueue = false;
+const lastCameraScan = new Map();
+const CAMERA_DUPLICATE_WINDOW = 2200;
 
 function apiRequest(params) {
   return new Promise((resolve, reject) => {
@@ -217,15 +221,18 @@ async function mulaiKamera() {
         frameRate: { ideal: 30, max: 30 }
       }
     }, video, (result, error) => {
-      if (!cameraActive || !result || requestBusy) return;
+      if (!cameraActive || !result) return;
       const code = String(result.getText() || '').trim();
       if (!code) return;
 
-      hentikanKamera();
-      status.textContent = 'Barcode terbaca. Sedang dikirim ke sistem...';
-      kirimBarcode(code).finally(() => {
-        if (activeMode === 'camera' && petugasAktif) mulaiKamera();
-      });
+      const now = Date.now();
+      const lastSeen = lastCameraScan.get(code) || 0;
+      if (now - lastSeen < CAMERA_DUPLICATE_WINDOW) return;
+      lastCameraScan.set(code, now);
+
+      scanQueue.push(code);
+      status.textContent = 'Barcode terbaca. ' + scanQueue.length + ' data dalam antrean...';
+      prosesAntreanScan();
     });
 
     if (cameraActive) {
@@ -277,6 +284,26 @@ function terimaScan(ev) {
   focusInput();
 }
 
+async function prosesAntreanScan() {
+  if (processingScanQueue) return;
+  processingScanQueue = true;
+  try {
+    while (scanQueue.length) {
+      const code = scanQueue.shift();
+      await kirimBarcode(code);
+      if (activeMode === 'camera' && cameraActive) {
+        document.getElementById('cameraStatus').textContent =
+          scanQueue.length
+            ? 'Kamera aktif. Memproses ' + scanQueue.length + ' barcode berikutnya...'
+            : 'Kamera aktif. Siap memindai barcode berikutnya.';
+      }
+    }
+  } finally {
+    processingScanQueue = false;
+    if (scanQueue.length) prosesAntreanScan();
+  }
+}
+
 async function kirimBarcode(code) {
   code = String(code || '').trim();
   if (!code || requestBusy) return;
@@ -306,7 +333,6 @@ function showMessage(type, html) {
   box.innerHTML = html;
   const results = document.getElementById('results');
   results.insertBefore(box, results.firstChild);
-  while (results.children.length > 5) results.removeChild(results.lastChild);
 }
 
 function esc(value) {
@@ -322,6 +348,9 @@ function akhiriSesi() {
   petugasAktif = '';
   successCount = 0;
   requestBusy = false;
+  scanQueue = [];
+  processingScanQueue = false;
+  lastCameraScan.clear();
   document.getElementById('count').textContent = '0';
   document.getElementById('results').innerHTML = '';
   document.getElementById('scanCard').classList.add('hidden');
